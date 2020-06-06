@@ -21,7 +21,10 @@ def root():
 @app.route('/start', methods=['GET'])
 def start_game():
     # Reset the session vars
-    session['word'] = RandomWords().get_random_word(hasDictionaryDef=True, maxLength=15, minLength=5)
+    word = RandomWords().get_random_word(hasDictionaryDef=True, maxLength=15, minLength=5).lower()
+    while not word.isalpha():
+        word = RandomWords().get_random_word(hasDictionaryDef=True, maxLength=15, minLength=5).lower()
+    session['word'] = word
     session['correct_guesses'] = ''
     session['incorrect_guesses'] = ''
     return redirect("/guess", code=302)
@@ -29,7 +32,7 @@ def start_game():
 @app.route('/guess', methods=['GET','POST'])
 def guess():
     word = session['word']
-    letter = request.args.get('letter')
+    letter = request.args.get('letter').lower()
 
     # Restart the game if no word is present
     if 'word' not in session:
@@ -37,20 +40,23 @@ def guess():
 
     if not letter:
         return create_page(word, session['correct_guesses'], session['incorrect_guesses'], "Guess a letter")
-
-    if letter and len(letter) > 1:
+    elif len(letter) > 1:
         return create_page(word, session['correct_guesses'], session['incorrect_guesses'], "Slow down! Only one letter at a time!")
+    elif not letter.isalpha():
+        return create_page(word, session['correct_guesses'], session['incorrect_guesses'], "Your guess must be a letter!")
 
     # Don't punish the player for guessing the same letter twice
     if letter in session['correct_guesses'] or letter in session['incorrect_guesses']:
         return create_page(word, session['correct_guesses'], session['incorrect_guesses'], "You've already guessed that letter")
 
     if letter in word:
-        if len(session['correct_guesses']) == len(word):
-            return pages.win_page
+
         # Add copies of the letter for each one present in the word to track success
         for i in range(word.count(letter)):
             session['correct_guesses'] += letter
+        # if 'word' and 'correct_guesses' are the same length, the player won
+        if len(session['correct_guesses']) == len(word):
+            return pages.win_page.format(word)
         return create_page(word, session['correct_guesses'], session['incorrect_guesses'], "Well done! Guess another letter")
     else:
         session['incorrect_guesses'] += letter
