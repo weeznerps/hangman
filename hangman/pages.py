@@ -1,3 +1,7 @@
+'''
+Contains HTML pages for the application
+'''
+
 start_page = """
 Hi! Click <a href="/start">here</a> to begin
 """
@@ -25,9 +29,14 @@ guess_page = """
 {1}
 </pre>
 <br>
+<pre>
 {2}
+</pre>
 <br>
+Incorrect guesses:
+<pre>
 {3}
+</pre>
 <br>
 <form>
 <input type="text" id="letter" name="letter"><br><br>
