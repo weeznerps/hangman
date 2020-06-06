@@ -74,6 +74,7 @@ def create_page(word, correct, incorrect, message):
             correct_progress_display += l
         else:
             correct_progress_display += "_"
+        correct_progress_display += " "  
     return guess_page.format(message, hangman_map[len(incorrect)], correct_progress_display, ", ".join(incorrect))
 
 
