@@ -2,7 +2,7 @@
 from flask import Flask, request, session, redirect
 from random_word import RandomWords
 
-from hangman import pages
+import pages
 
 app = Flask(__name__)
 app.secret_key = 'secret_key'
