@@ -302,18 +302,31 @@ def find_track(token, title, artist):
 
 
 def load_track_file(path):
-    """Read 'Artist - Title' lines. Blank lines and # comments are skipped."""
+    """Read 'Artist - Title' lines. Blank lines and # comments are skipped.
+
+    A line may pin an exact recording with a trailing '| spotify:track:<id>'.
+    Pinned lines skip search entirely, which both removes the ambiguity of
+    picking between mixes and avoids spending the daily search quota.
+    """
     out = []
     with open(path) as fh:
         for lineno, line in enumerate(fh, 1):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
+            track_id = None
+            if "|" in line:
+                line, _, pin = line.partition("|")
+                line, pin = line.strip(), pin.strip()
+                if not pin.startswith("spotify:track:"):
+                    raise SystemExit("{}:{}: bad pin, want spotify:track:<id>, got: {}"
+                                     .format(path, lineno, pin))
+                track_id = pin.split(":")[-1]
             if " - " not in line:
                 raise SystemExit("{}:{}: expected 'Artist - Title', got: {}".format(
                     path, lineno, line))
             artist, title = line.split(" - ", 1)
-            out.append((title.strip(), artist.strip(), None))
+            out.append((title.strip(), artist.strip(), track_id))
     return out
 
 
