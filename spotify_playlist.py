@@ -173,18 +173,37 @@ def load_token():
     return tok["access_token"]
 
 
+def _norm(s):
+    return "".join(c for c in s.lower() if c.isalnum())
+
+
+def _plausible(hit, title, artist):
+    """Guard against Spotify returning a confident but unrelated match.
+
+    Requires the artist to actually line up and the titles to overlap in one
+    direction. Without this, 'Sex With The Machines' by Anthony Rother comes
+    back as a Mark Ronson track.
+    """
+    got_artists = _norm(" ".join(a["name"] for a in hit["artists"]))
+    parts = [p for p in artist.replace("&", ",").replace(" and ", ",").split(",") if p.strip()]
+    if not any(_norm(p) and _norm(p) in got_artists for p in parts):
+        return False
+    got_title, want_title = _norm(hit["name"]), _norm(title)
+    return want_title in got_title or got_title in want_title
+
+
 def find_track(token, title, artist):
-    """Field-scoped search, then a looser fallback."""
+    """Field-scoped search, then a looser pass. Both are verified."""
     attempts = [
         'track:"{}" artist:"{}"'.format(title, artist),
-        '{} {}'.format(title, artist),
+        "{} {}".format(title, artist),
     ]
     for q in attempts:
         url = "https://api.spotify.com/v1/search?" + urllib.parse.urlencode(
-            {"q": q, "type": "track", "limit": 5})
-        items = request(url, token=token).get("tracks", {}).get("items", [])
-        if items:
-            return items[0]
+            {"q": q, "type": "track", "limit": 10})
+        for hit in request(url, token=token).get("tracks", {}).get("items", []):
+            if _plausible(hit, title, artist):
+                return hit
     return None
 
 
@@ -206,16 +225,19 @@ def cmd_build(args):
         else:
             missing.append("{} - {}".format(artist, title))
 
+    # /v1/users/{id}/playlists is deprecated and now returns a bare 403.
     playlist = request(
-        "https://api.spotify.com/v1/users/{}/playlists".format(me["id"]),
+        "https://api.spotify.com/v1/me/playlists",
         method="POST",
         token=token,
         data={"name": args.name, "public": False,
               "description": "Electro, 1982-present."},
     )
+    # Must be /items, not /tracks. /tracks was renamed and now answers 403
+    # Forbidden rather than 404, which reads like a permissions problem.
     for i in range(0, len(uris), 100):
         request(
-            "https://api.spotify.com/v1/playlists/{}/tracks".format(playlist["id"]),
+            "https://api.spotify.com/v1/playlists/{}/items".format(playlist["id"]),
             method="POST", token=token, data={"uris": uris[i:i + 100]},
         )
 
