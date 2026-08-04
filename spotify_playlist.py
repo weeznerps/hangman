@@ -81,14 +81,23 @@ def request(url, method="GET", token=None, data=None, form=None):
     elif data is not None:
         body = json.dumps(data).encode()
         headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req) as resp:
-            raw = resp.read()
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")
-        raise SystemExit("HTTP {} on {} {}\n{}".format(e.code, method, url, detail))
+    for attempt in range(6):
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req) as resp:
+                raw = resp.read()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            # Resolving a long track list burns through the search quota, so
+            # 429 is routine rather than exceptional. Spotify tells us how
+            # long to wait; honour it instead of failing the whole run.
+            if e.code == 429 and attempt < 5:
+                wait = int(e.headers.get("Retry-After", 2)) + 1
+                print("  rate limited, waiting {}s...".format(wait))
+                time.sleep(wait)
+                continue
+            detail = e.read().decode(errors="replace")
+            raise SystemExit("HTTP {} on {} {}\n{}".format(e.code, method, url, detail))
 
 
 def cmd_auth(args):
@@ -143,16 +152,47 @@ def cmd_exchange(args):
     os.remove(PENDING_FILE)
     tok["client_id"] = pending["client_id"]
     tok["expires_at"] = time.time() + tok.get("expires_in", 3600)
+    save_token(tok)
+    print("\nToken saved to {}. Now run:\n  python3 {} build".format(
+        TOKEN_FILE, os.path.basename(__file__)))
+    print_refresh_token()
+
+
+def cmd_token(args):
+    """Restore a session from a saved refresh token, skipping the browser."""
+    save_token({"refresh_token": args.refresh_token, "client_id": args.client_id,
+                "expires_at": 0})
+    load_token()  # redeem immediately so a bad value fails loudly, here and now
+    print("Token restored and verified.")
+    print_refresh_token()
+
+
+def save_token(tok):
     with open(TOKEN_FILE, "w") as fh:
         json.dump(tok, fh)
     os.chmod(TOKEN_FILE, 0o600)
-    print("\nToken saved to {}. Now run:\n  python3 {} build".format(
-        TOKEN_FILE, os.path.basename(__file__)))
+
+
+def print_refresh_token():
+    """Echo the live refresh token.
+
+    Spotify's PKCE flow rotates refresh tokens: redeeming one generally
+    retires it and hands back a replacement. Printing the current value after
+    every run means the newest one is always the last one on screen, so a
+    saved copy never silently goes stale.
+    """
+    with open(TOKEN_FILE) as fh:
+        tok = json.load(fh)
+    print("\n--- restore this session later with ---")
+    print("python3 {} token --client-id {} --refresh-token {}".format(
+        os.path.basename(__file__), tok["client_id"], tok["refresh_token"]))
 
 
 def load_token():
     if not os.path.exists(TOKEN_FILE):
-        raise SystemExit("No token. Run the 'auth' step first.")
+        raise SystemExit(
+            "No token. Run 'auth' for a fresh browser login, or 'token "
+            "--client-id <id> --refresh-token <value>' to restore a saved one.")
     with open(TOKEN_FILE) as fh:
         tok = json.load(fh)
     if tok.get("expires_at", 0) > time.time() + 60:
@@ -166,10 +206,11 @@ def load_token():
             "client_id": tok["client_id"],
         },
     )
-    tok.update(fresh)
+    # Keep the old refresh token when the response omits a new one; blindly
+    # update() would drop the only way back in.
+    tok.update({k: v for k, v in fresh.items() if v is not None})
     tok["expires_at"] = time.time() + fresh.get("expires_in", 3600)
-    with open(TOKEN_FILE, "w") as fh:
-        json.dump(tok, fh)
+    save_token(tok)
     return tok["access_token"]
 
 
@@ -308,6 +349,7 @@ def cmd_build(args):
         print("\nNot found on Spotify ({}):".format(len(missing)))
         for m in missing:
             print("  - " + m)
+    print_refresh_token()
 
 
 def main():
@@ -322,6 +364,11 @@ def main():
     p_exch = sub.add_parser("exchange", help="step 2: trade the redirect URL for a token")
     p_exch.add_argument("--url", required=True, help="full redirect URL from your browser")
     p_exch.set_defaults(func=cmd_exchange)
+
+    p_tok = sub.add_parser("token", help="restore from a saved refresh token, no browser")
+    p_tok.add_argument("--client-id", required=True)
+    p_tok.add_argument("--refresh-token", required=True)
+    p_tok.set_defaults(func=cmd_token)
 
     p_build = sub.add_parser("build", help="create the playlist")
     p_build.add_argument("--name", default="Electro")
