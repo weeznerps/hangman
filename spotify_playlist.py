@@ -177,50 +177,112 @@ def _norm(s):
     return "".join(c for c in s.lower() if c.isalnum())
 
 
-def _plausible(hit, title, artist):
-    """Guard against Spotify returning a confident but unrelated match.
+REMIX_WORDS = ("remix", "rework", "edit", "version", "mix", "remaster", "re-edit")
 
-    Requires the artist to actually line up and the titles to overlap in one
-    direction. Without this, 'Sex With The Machines' by Anthony Rother comes
-    back as a Mark Ronson track.
+
+def _artist_parts(artist):
+    cleaned = artist.replace("&", ",").replace(" and ", ",")
+    return [p.strip() for p in cleaned.split(",") if p.strip()]
+
+
+def _score(hit, title, artist):
+    """Rank a candidate. None means reject outright.
+
+    Spotify always returns something and always looks confident, so both the
+    artist and the title have to earn their match. Substring matching alone is
+    too loose - it let 'Coki' match 'Anas Cokie' and 'Break' match
+    'Heaven Break'.
     """
-    got_artists = _norm(" ".join(a["name"] for a in hit["artists"]))
-    parts = [p for p in artist.replace("&", ",").replace(" and ", ",").split(",") if p.strip()]
-    if not any(_norm(p) and _norm(p) in got_artists for p in parts):
-        return False
+    got_names = [_norm(a["name"]) for a in hit["artists"]]
+    want_words = {w for n in _artist_parts(artist) for w in _norm(n).split()}
+
+    # Match whole names, or every word of the query name appearing in a credit.
+    # Bare substrings are too permissive: they make ARTBAT match "Artbattle".
+    name_words = [{_norm(w) for w in a["name"].split()} for a in hit["artists"]]
+    artist_pts = 0
+    for part in _artist_parts(artist):
+        np, words = _norm(part), {_norm(w) for w in part.split()}
+        if not np:
+            continue
+        if np in got_names:
+            artist_pts = max(artist_pts, 4)
+        elif any(words and words <= nw for nw in name_words):
+            artist_pts = max(artist_pts, 3)
+    if not artist_pts:
+        return None
+
     got_title, want_title = _norm(hit["name"]), _norm(title)
-    return want_title in got_title or got_title in want_title
+    if got_title == want_title:
+        title_pts = 5
+    elif got_title.startswith(want_title):
+        title_pts = 3
+    elif want_title in got_title or got_title in want_title:
+        title_pts = 1
+    else:
+        return None
+
+    score = artist_pts + title_pts
+    raw_title = hit["name"].lower()
+    if any(w in raw_title for w in REMIX_WORDS) and not any(
+            w in title.lower() for w in REMIX_WORDS):
+        score -= 3
+    # A remixer credited as an artist means this is somebody else's take.
+    if len(got_names) > len(want_words) and "remix" in raw_title:
+        score -= 1
+    return score
 
 
 def find_track(token, title, artist):
-    """Field-scoped search, then a looser pass. Both are verified."""
+    """Search twice, score every candidate, keep the best."""
     attempts = [
         'track:"{}" artist:"{}"'.format(title, artist),
         "{} {}".format(title, artist),
     ]
+    best, best_score = None, None
     for q in attempts:
         url = "https://api.spotify.com/v1/search?" + urllib.parse.urlencode(
-            {"q": q, "type": "track", "limit": 10})
+            {"q": q, "type": "track", "limit": 10})  # 10 is the cap here
         for hit in request(url, token=token).get("tracks", {}).get("items", []):
-            if _plausible(hit, title, artist):
-                return hit
-    return None
+            s = _score(hit, title, artist)
+            if s is not None and (best_score is None or s > best_score):
+                best, best_score = hit, s
+        if best_score is not None and best_score >= 9:
+            break  # exact artist + exact title; nothing will beat it
+    return best
+
+
+def load_track_file(path):
+    """Read 'Artist - Title' lines. Blank lines and # comments are skipped."""
+    out = []
+    with open(path) as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if " - " not in line:
+                raise SystemExit("{}:{}: expected 'Artist - Title', got: {}".format(
+                    path, lineno, line))
+            artist, title = line.split(" - ", 1)
+            out.append((title.strip(), artist.strip(), None))
+    return out
 
 
 def cmd_build(args):
     token = load_token()
-    me = request("https://api.spotify.com/v1/me", token=token)
+    tracks = load_track_file(args.file) if args.file else TRACKS
 
     uris, missing = [], []
-    for title, artist, track_id in TRACKS:
+    for title, artist, track_id in tracks:
         if track_id:
             uris.append("spotify:track:" + track_id)
             continue
         hit = find_track(token, title, artist)
         if hit:
             names = ", ".join(a["name"] for a in hit["artists"])
-            print("  resolved: {} - {}  ->  {} - {}".format(
-                artist, title, names, hit["name"]))
+            got = "{} - {}".format(names, hit["name"])
+            want = "{} - {}".format(artist, title)
+            if _norm(got) != _norm(want):
+                print("  variant: {}  ->  {}".format(want, got))
             uris.append(hit["uri"])
         else:
             missing.append("{} - {}".format(artist, title))
@@ -230,8 +292,7 @@ def cmd_build(args):
         "https://api.spotify.com/v1/me/playlists",
         method="POST",
         token=token,
-        data={"name": args.name, "public": False,
-              "description": "Electro, 1982-present."},
+        data={"name": args.name, "public": False, "description": args.description},
     )
     # Must be /items, not /tracks. /tracks was renamed and now answers 403
     # Forbidden rather than 404, which reads like a permissions problem.
@@ -264,6 +325,8 @@ def main():
 
     p_build = sub.add_parser("build", help="create the playlist")
     p_build.add_argument("--name", default="Electro")
+    p_build.add_argument("--file", help="track list; 'Artist - Title' per line")
+    p_build.add_argument("--description", default="")
     p_build.set_defaults(func=cmd_build)
 
     args = parser.parse_args()
