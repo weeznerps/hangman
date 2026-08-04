@@ -33,6 +33,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 TOKEN_FILE = os.path.join(_HERE, ".spotify_token.json")
 PENDING_FILE = os.path.join(_HERE, ".spotify_pending.json")
 REDIRECT_URI = "http://127.0.0.1:8888/callback"
+MAX_RETRY_WAIT = 120  # seconds; longer means quota exhaustion, not a burst
 SCOPES = "playlist-modify-private playlist-modify-public"
 
 # (title, artist, track_id_or_None). None -> resolved via search at build time.
@@ -93,6 +94,14 @@ def request(url, method="GET", token=None, data=None, form=None):
             # long to wait; honour it instead of failing the whole run.
             if e.code == 429 and attempt < 5:
                 wait = int(e.headers.get("Retry-After", 2)) + 1
+                # Retry-After can be ~24h when the daily search quota is spent,
+                # not just seconds for a burst. Sleeping that long is worse
+                # than stopping, so only wait out short throttles.
+                if wait > MAX_RETRY_WAIT:
+                    raise SystemExit(
+                        "Spotify search quota exhausted; Retry-After is {}s "
+                        "(~{:.1f}h). Resolution can't continue until it "
+                        "resets.".format(wait, wait / 3600.0))
                 print("  rate limited, waiting {}s...".format(wait))
                 time.sleep(wait)
                 continue

@@ -16,6 +16,7 @@ Shimon & Andy C - Bodyrock
 # --- 2000-2014 ---
 Bad Company - The Nine
 Konflict - Messiah
+Ram Trilogy - Screamer
 Calibre - Second Sun
 High Contrast - Return of Forever
 Pendulum - Slam
@@ -23,7 +24,6 @@ Noisia - Diplodocus
 Sub Focus - Timewarp
 Chase & Status - Blk & Blu
 Netsky - Iron Heart
-Black Sun Empire - Arrakis
 
 # --- Post 2015 ---
 Dimension - Whip Slap
